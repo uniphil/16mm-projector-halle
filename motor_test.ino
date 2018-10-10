@@ -1,3 +1,4 @@
+#define SCALE2 1
 #define PWM 9
 #define DIR A2
 #define ADJ A4
@@ -8,9 +9,16 @@
 #define MAX_SPEED 150
 #define MAX_DIAL 1024
 
+#define STOPPED 1000
+
 #define SCALE2 1
 
 #define T(X) X >> SCALE2
+
+#define FPS 24
+#define KP 0.02
+#define KI 0.12
+#define KD 0.09
 
 enum State {
   stopped,
@@ -18,10 +26,13 @@ enum State {
 };
 
 State state = stopped;
-uint16_t last_speed = 0;
+double last_speed = 0;
+unsigned long last_update = 0;
 volatile unsigned long last_hall_trigger = 0;
 volatile unsigned long hall_dt_micros;
 volatile bool dirty = false;
+
+double sp = 1.0 / FPS * 1000000;
 
 void setup() {
   pinMode(PWM, OUTPUT);
@@ -69,7 +80,13 @@ void hall_trigger() {
 }
 
 uint8_t scale_speed(uint16_t pot) {
-  return map(pot, 0, MAX_DIAL, MIN_SPEED, MAX_SPEED);
+  long adjusted = map(pot, 0, MAX_DIAL, MIN_SPEED, MAX_SPEED);
+  if (adjusted < MIN_SPEED) {
+    return MIN_SPEED;
+  } else if (adjusted > MAX_SPEED) {
+    return MAX_SPEED;
+  }
+  return adjusted;
 }
 
 void start() {
@@ -93,20 +110,50 @@ void stop_gently() {
   last_speed = speed;
 }
 
-void update_speed() {
-  uint16_t next_speed = analogRead(ADJ);
-  if (dirty) {
-    Serial.println(1.0 / ((hall_dt_micros << SCALE2) / 1000000.0));
-    dirty = false;
-  }
-  if (next_speed != last_speed) {
-    last_speed = next_speed;
-//    Serial.print("speed: ");
-//    Serial.print(next_speed);
-//    Serial.print("; ");
-//    Serial.println(scale_speed(next_speed));
-    analogWrite(PWM, scale_speed(next_speed));
-  }
+double err_sum = 0;
+double last_err = 0;
 
+void update_speed() {
+  unsigned long now = millis();
+  if (dirty) {
+    dirty = false;
+
+    double input = hall_dt_micros << SCALE2;
+    double err = input - sp;
+
+    Serial.print(1.0 / (input / 1000000));
+    Serial.print("\t");
+    Serial.print(err);
+
+    err_sum += err * input / 1000000;
+    if (err_sum > sp) {
+      err_sum = sp;
+    } else if (-err_sum > sp) {
+      err_sum = -sp;
+    }
+    double d_err = (err - last_err) / input / 1000000;
+    last_err = err;
+
+    double next_speed = KP * err + KI * err_sum + KD * d_err;
+
+    if (next_speed < 0) {
+      next_speed = 0;
+    }
+
+    analogWrite(PWM, scale_speed(next_speed));
+
+    Serial.print("\t");
+    Serial.print(err_sum);
+    Serial.print("\t");
+    Serial.print(d_err);
+    Serial.print("\t");
+    Serial.println(scale_speed(next_speed));
+
+    last_speed = next_speed;
+    last_update = now;
+  } else if (now - last_update > STOPPED) {
+    analogWrite(PWM, MAX_SPEED);
+  }
 }
+
 
