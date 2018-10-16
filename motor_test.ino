@@ -108,10 +108,6 @@ void transition(State next_state) {
 }
 
 bool run_task(bool (*task)(unsigned long, bool), State next_state = -1) {
-  if (fresh_state_change) {
-    // skip -- another task in the loop transitioned
-    return;
-  }
   unsigned long now = millis();
   bool completed = (*task)(TD(now - last_state_change), fresh_state_change);
   if (fresh_state_change) fresh_state_change = false;
@@ -184,16 +180,20 @@ void loop() {
     if (!go) {
       transition(stopping);
     } else {
-      run_task(&sync, tracking);
-      run_task(&stall_check, stopped);
+      // only run stall check if we're not transitioning
+      if (!run_task(&sync, tracking)) {
+           run_task(&stall_check, stopped);
+      }
     }
     break;
   case tracking:
     if (!go) {
       transition(stopping);
     } else {
-      run_task(&track, syncing);
-      run_task(&stall_check, stopped);
+      // only run stall check if we're not transitioning
+      if (!run_task(&track, syncing)) {
+           run_task(&stall_check, stopped);
+      }
     }
     break;
   case stopping:
