@@ -12,7 +12,11 @@
 #define DEAD_TIME 42  // ms (based on 24 Hz)
 
 #define SLOWDOWN 1  // ms per step down
-#define STOPPED 1000
+#define STOPPED 500  // part of this means that we can't do frame rates approaching 2fps
+
+#define STABLE_D_THRESH 4.0
+#define STABLE_D_TIME 1300 // ms
+
 
 #define SCALE2 1
 
@@ -23,6 +27,8 @@
 #define KP 12.0
 #define KI 0.1
 #define KD -75.0
+
+#define KPHASE 500.0
 
 
 enum State {
@@ -42,7 +48,10 @@ volatile unsigned long vsync_last_trigger = 0;
 volatile unsigned long vsync_last_last_trigger = 0;
 volatile unsigned long hall_last_trigger = 0;
 volatile unsigned long hall_dt_micros;
-//volatile uint8_t hall_unprocessed = 0;
+
+volatile double hall_d_err = 0;
+volatile double hall_last_err = 0;
+unsigned long hall_last_big_d = 0;
 
 double sp = 1.0 / FPS * 1000;  // millis
 
@@ -50,6 +59,7 @@ unsigned long update_interval = sp / 10;  // 10x dead time
 
 double err_sum = 0;
 double last_err = 0;
+double last_output = 0;
 
 typedef struct {
   unsigned long last_update;
@@ -65,8 +75,6 @@ void vsync_trigger() {
   vsync_last_trigger = micros();
 }
 
-volatile double hall_d_err = 0;
-volatile double hall_last_err = 0;
 
 void hall_trigger() {
   unsigned long now = micros();
@@ -106,20 +114,22 @@ void transition(State next_state) {
   fresh_state_change = true;
 }
 
-bool run_task(bool (*task)(unsigned long, bool)) {
+bool run_task(bool (*task)(unsigned long, bool), State next_state = -1) {
   unsigned long now = millis();
-  bool result = (*task)(TD(now - last_state_change), fresh_state_change);
+  bool completed = (*task)(TD(now - last_state_change), fresh_state_change);
   if (fresh_state_change) fresh_state_change = false;
-  return result;
-}
-
-bool run_task(bool (*task)(unsigned long, bool), State next_state) {
-  bool completed = run_task(task);
-  if (completed) {
+  if (completed & next_state != -1) {
     transition(next_state);
   }
   return completed;
 }
+
+//bool run_task(bool (*task)(unsigned long, bool), State next_state) {
+//  bool completed = run_task(task);
+//  if (completed) {
+//  }
+//  return completed;
+//}
 
 bool drive(long kspeed, bool reverse = false) {
   bool in_range = true;
@@ -185,14 +195,17 @@ void loop() {
       transition(stopping);
     } else {
       run_task(&sync, tracking);
+      run_task(&stall_check, stopped);
     }
     break;
   case tracking:
     if (!go) {
       transition(stopping);
     } else {
-      run_task(&track);
+      run_task(&track, syncing);
+      run_task(&stall_check, stopped);
     }
+    break;
   case stopping:
     run_task(&gentle_stop, stopped);
     break;
@@ -224,11 +237,12 @@ bool start(unsigned long t, bool init) {
 bool sync(unsigned long t, bool init) {
   // spin up or down to match frame rate (error from fps)
   if (init) {
+    Serial.println("INIT SYNC");
     drive(200);
     last_err = 0;
     err_sum = 0;
     last_pid_update = t;
-    
+    hall_last_big_d = t;
 //    hall_d_err = 0;
 //    hall_last_err 0;
 //    hall_unprocessed = 0;
@@ -239,6 +253,12 @@ bool sync(unsigned long t, bool init) {
     double input = TD(hall_dt_micros / 1000);  // to millis
     double err = input - sp;
     double curr_err_sum = err_sum + err * dt;
+    if (KI * curr_err_sum < 0) {
+      Serial.print("WAT ");
+      Serial.print(t);
+      Serial.print("\t");
+      Serial.println(last_pid_update);
+    }
     Serial.print("sp:\t");
     Serial.print(sp);
     Serial.print("\tinput:\t");
@@ -262,20 +282,85 @@ bool sync(unsigned long t, bool init) {
     Serial.print(" (");
     Serial.print(output_in_range);
     Serial.println(")");
+    last_output = output;
     last_pid_update = t;
-//    last_err = err;
-    if (output_in_range) {
+    if (output_in_range) {  // avoid integral wind-up
       err_sum = curr_err_sum;
     }
+    if (abs(hall_d_err) > STABLE_D_THRESH) {
+      hall_last_big_d = t;
+    }
   }
-  return false;
+  return (t - hall_last_big_d) > STABLE_D_TIME;
 }
 
+
+bool stall_check(unsigned long t, bool init) {
+  noInterrupts();
+    unsigned long last_hall_last_trigger = hall_last_trigger;
+  interrupts();
+  unsigned long now_raw_micros = micros();
+  unsigned long dt_last = TD((now_raw_micros - last_hall_last_trigger) / 1000);
+  if (dt_last > sp * 8) {
+    Serial.print("stalled? ");
+    Serial.print(dt_last);
+    Serial.print("\n");
+    Serial.print(now_raw_micros);
+    Serial.print("\n");
+    Serial.println(last_hall_last_trigger);
+    return t > 300;
+  }
+  return false;
+//  return (t > 300) && dt_last > sp * 8;  // we've missed 8 revs
+}
+
+
+uint8_t err_count = 0;
+
 bool track(unsigned long t, bool init) {
-  // track phase (error from vsync)
-//  if (t - last_pid_update >= update_interval) {
-//    last_pid_update = t;
-//  }
+  // phase-lock
+  if (init) {
+    err_count = 0;
+  }
+  if (t - last_pid_update >= update_interval) {
+    double target_phase = (t % (unsigned int)sp) / sp;
+    unsigned long measured_t = micros() - hall_last_trigger;
+    double measured_phase = (measured_t % hall_dt_micros) / (double)hall_dt_micros;
+
+    double phase_error = target_phase - measured_phase;
+    if (phase_error > 0.5) {
+      phase_error -= 1;
+    } else if (phase_error < -0.5) {
+      phase_error += 1;
+    }
+
+    drive(last_output + KPHASE * phase_error);
+
+    Serial.print(target_phase);
+    Serial.print("\t");
+    Serial.print(measured_phase);
+    Serial.print("\t");
+    Serial.print(phase_error);
+    Serial.print("\t");
+    Serial.print(KPHASE * phase_error); 
+
+    last_pid_update = t;
+    
+    double input = TD(hall_dt_micros / 1000);  // to millis
+    double err = abs(input - sp) / sp;
+    if (err > 0.1) {
+      err_count++;
+      Serial.print("\t");
+      Serial.print(err);
+      Serial.print("\t");
+      Serial.println(err_count);
+      return err_count > 23;  // cover at least 3 measurement cycles
+    } else {
+      err_count = 0;
+    }
+
+    Serial.println();
+  }
   return false;
 }
 
