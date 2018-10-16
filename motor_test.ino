@@ -6,7 +6,7 @@
 #define HALL 3
 #define GO 4
 
-#define MIN_SPEED 30
+#define MIN_SPEED 44
 #define MAX_SPEED 150
 
 #define STABLE_D_THRESH 4.0
@@ -19,11 +19,11 @@
 #define TD(X) X << SCALE2  // time measures (real world -> arduino)
 
 #define FPS 20
-#define KP 12.0
-#define KI 0.1
-#define KD -75.0
+#define KP 4.0
+#define KI 0.04
+#define KD -38.0
 
-#define KPHASE 500.0
+#define KPHASE 300.0
 
 
 enum State {
@@ -53,7 +53,6 @@ double sp = 1.0 / FPS * 1000;  // millis
 unsigned long update_interval = sp / 10;  // 10x dead time
 
 double err_sum = 0;
-double last_err = 0;
 double last_output = 0;
 
 typedef struct {
@@ -217,7 +216,7 @@ bool start(unsigned long t, bool init) {
   } else if (t < 240) {
     drive(map(t, 160, 240, 0, 600));
   } else if (t < 400) {
-    drive(map(t, 240, 400, 500, 333));
+    drive(map(t, 240, 400, 500, 400));
   } else {
     return true;
   }
@@ -228,9 +227,8 @@ bool sync(unsigned long t, bool init) {
   // spin up or down to match frame rate (error from fps)
   if (init) {
     Serial.println("INIT SYNC");
-    drive(200);
-    last_err = 0;
-    err_sum = 0;
+    drive(400);
+    err_sum = 400 / KI;  // kick-start
     last_pid_update = t;
     hall_last_big_d = t;
     return false;
@@ -282,11 +280,13 @@ bool sync(unsigned long t, bool init) {
       hall_last_big_d = t;
     }
   }
-  return (t - hall_last_big_d) > STABLE_D_TIME;
+  return false;
+//  return (t - hall_last_big_d) > STABLE_D_TIME;
 }
 
 
 bool stall_check(unsigned long t, bool init) {
+  return false;
   noInterrupts();
     unsigned long last_hall_last_trigger = hall_last_trigger;
   interrupts();
@@ -302,11 +302,11 @@ bool stall_check(unsigned long t, bool init) {
     return t > 300;
   }
   return false;
-//  return (t > 300) && dt_last > sp * 8;  // we've missed 8 revs
 }
 
 
 uint8_t err_count = 0;
+//double phase_error_lowpass = 0;
 
 bool track(unsigned long t, bool init) {
   // phase-lock
@@ -329,6 +329,8 @@ bool track(unsigned long t, bool init) {
       phase_error += 1;
     }
 
+    
+//    phase_error_lowpass = phase_error_lowpass * 0.9 + phase_error * 0.1;
     drive(last_output + KPHASE * phase_error);
 
     Serial.print(target_phase);
@@ -337,6 +339,8 @@ bool track(unsigned long t, bool init) {
     Serial.print("\t");
     Serial.print(phase_error);
     Serial.print("\t");
+//    Serial.print(phase_error_lowpass);
+//    Serial.print("\t");
     Serial.print(KPHASE * phase_error); 
 
     last_pid_update = t;
