@@ -9,11 +9,6 @@
 #define MIN_SPEED 30
 #define MAX_SPEED 150
 
-#define DEAD_TIME 42  // ms (based on 24 Hz)
-
-#define SLOWDOWN 1  // ms per step down
-#define STOPPED 500  // part of this means that we can't do frame rates approaching 2fps
-
 #define STABLE_D_THRESH 4.0
 #define STABLE_D_TIME 1300 // ms
 
@@ -85,8 +80,6 @@ void hall_trigger() {
   double err = input - sp;
   hall_d_err = (err - hall_last_err) / input;
   hall_last_err = err;
-
-//  hall_unprocessed += 1;
 }
 
 char* state_name(State state) {
@@ -115,6 +108,10 @@ void transition(State next_state) {
 }
 
 bool run_task(bool (*task)(unsigned long, bool), State next_state = -1) {
+  if (fresh_state_change) {
+    // skip -- another task in the loop transitioned
+    return;
+  }
   unsigned long now = millis();
   bool completed = (*task)(TD(now - last_state_change), fresh_state_change);
   if (fresh_state_change) fresh_state_change = false;
@@ -123,13 +120,6 @@ bool run_task(bool (*task)(unsigned long, bool), State next_state = -1) {
   }
   return completed;
 }
-
-//bool run_task(bool (*task)(unsigned long, bool), State next_state) {
-//  bool completed = run_task(task);
-//  if (completed) {
-//  }
-//  return completed;
-//}
 
 bool drive(long kspeed, bool reverse = false) {
   bool in_range = true;
@@ -243,14 +233,15 @@ bool sync(unsigned long t, bool init) {
     err_sum = 0;
     last_pid_update = t;
     hall_last_big_d = t;
-//    hall_d_err = 0;
-//    hall_last_err 0;
-//    hall_unprocessed = 0;
     return false;
   }
   if (t - last_pid_update >= update_interval) {
     double dt = t - last_pid_update;
-    double input = TD(hall_dt_micros / 1000);  // to millis
+    noInterrupts();
+      unsigned long last_hall_dt_micros = hall_dt_micros;
+      double last_hall_d_err = hall_d_err;
+    interrupts();
+    double input = TD(last_hall_dt_micros / 1000);  // to millis
     double err = input - sp;
     double curr_err_sum = err_sum + err * dt;
     if (KI * curr_err_sum < 0) {
@@ -268,8 +259,8 @@ bool sync(unsigned long t, bool init) {
     Serial.print("\ti:\t");
     Serial.print(KI * curr_err_sum);
     Serial.print("\td:\t");
-    Serial.print(KD * hall_d_err);
-    double output = KP * err + KI * curr_err_sum + KD * hall_d_err;
+    Serial.print(KD * last_hall_d_err);
+    double output = KP * err + KI * curr_err_sum + KD * last_hall_d_err;
     bool output_in_range;
     if (output < 0) {
       drive(1);
@@ -287,7 +278,7 @@ bool sync(unsigned long t, bool init) {
     if (output_in_range) {  // avoid integral wind-up
       err_sum = curr_err_sum;
     }
-    if (abs(hall_d_err) > STABLE_D_THRESH) {
+    if (abs(last_hall_d_err) > STABLE_D_THRESH) {
       hall_last_big_d = t;
     }
   }
@@ -324,8 +315,12 @@ bool track(unsigned long t, bool init) {
   }
   if (t - last_pid_update >= update_interval) {
     double target_phase = (t % (unsigned int)sp) / sp;
-    unsigned long measured_t = micros() - hall_last_trigger;
-    double measured_phase = (measured_t % hall_dt_micros) / (double)hall_dt_micros;
+    noInterrupts();
+      unsigned long last_hall_last_trigger = hall_last_trigger;
+      unsigned long last_hall_dt_micros = hall_dt_micros;
+    interrupts();
+    unsigned long measured_t = micros() - last_hall_last_trigger;
+    double measured_phase = (measured_t % last_hall_dt_micros) / (double)last_hall_dt_micros;
 
     double phase_error = target_phase - measured_phase;
     if (phase_error > 0.5) {
@@ -346,7 +341,7 @@ bool track(unsigned long t, bool init) {
 
     last_pid_update = t;
     
-    double input = TD(hall_dt_micros / 1000);  // to millis
+    double input = TD(last_hall_dt_micros / 1000);  // to millis
     double err = abs(input - sp) / sp;
     if (err > 0.1) {
       err_count++;
@@ -371,48 +366,4 @@ bool gentle_stop(unsigned long t, bool init) {
   drive(map(t, 0, MIN_SPEED, MIN_SPEED, 0));
   return false;
 }
-
-//void update_speed() {
-//  unsigned long now = millis();
-//  if (dirty) {
-//    dirty = false;
-//
-//    double input = hall_dt_micros << SCALE2;
-//    double err = sp - input;
-//
-//    Serial.print(1.0 / (input / 1000000));
-//    Serial.print("\t");
-//    Serial.print(err);
-//
-//    err_sum += err * input / 1000000;
-//    if (err_sum > sp) {
-//      err_sum = sp;
-//    } else if (-err_sum > sp) {
-//      err_sum = -sp;
-//    }
-//    double d_err = (err - last_err) / input / 1000000;
-//    last_err = err;
-//
-//    double next_speed = KP * err + KI * err_sum + KD * d_err;
-//
-//    if (next_speed < 0) {
-//      next_speed = 0;
-//    }
-//
-//    analogWrite(PWM, scale_speed(next_speed));
-//
-//    Serial.print("\t");
-//    Serial.print(err_sum);
-//    Serial.print("\t");
-//    Serial.print(d_err);
-//    Serial.print("\t");
-//    Serial.println(scale_speed(next_speed));
-//
-//    last_speed = next_speed;
-//    last_update = now;
-//  } else if (now - last_update > STOPPED) {
-//    analogWrite(PWM, MAX_SPEED);
-//  }
-//}
-
 
