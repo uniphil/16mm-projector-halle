@@ -5,6 +5,7 @@
 #define VSYNC 2
 #define HALL 3
 #define GO 4
+#define SPEED A0
 
 #define MIN_SPEED 44
 #define MAX_SPEED 150
@@ -23,7 +24,7 @@
 #define KI 0.04
 #define KD -38.0
 
-#define KPHASE 300.0
+#define KPHASE 500.0
 
 
 enum State {
@@ -34,7 +35,13 @@ enum State {
   stopping,
 };
 
+enum Mode {
+  manual,
+  control,
+};
+
 State state = stopped;
+Mode mode = control;
 double last_speed = 0;
 unsigned long last_pid_update = 0;
 unsigned long last_state_change = 0;
@@ -46,6 +53,10 @@ volatile unsigned long hall_dt_micros;
 
 volatile double hall_d_err = 0;
 volatile double hall_last_err = 0;
+
+volatile bool hall_maybe_skip = false;
+volatile bool hall_maybe_bounce = false;
+
 unsigned long hall_last_big_d = 0;
 
 double sp = 1.0 / FPS * 1000;  // millis
@@ -72,7 +83,13 @@ void vsync_trigger() {
 
 void hall_trigger() {
   unsigned long now = micros();
-  hall_dt_micros = now - hall_last_trigger;
+  unsigned long dt_micros = now - hall_last_trigger;
+  if (dt_micros > hall_dt_micros * 1.667) {
+    hall_maybe_skip = true;
+  } else if (dt_micros < hall_dt_micros / 3) {
+    hall_maybe_bounce = true;
+  }
+  hall_dt_micros = dt_micros;
   hall_last_trigger = now;
 
   double input = TD(hall_dt_micros / 1000);  // to millis
@@ -160,6 +177,14 @@ void setup() {
 
 void loop() {
   bool go = digitalRead(GO) == LOW;
+  if (hall_maybe_skip) {
+    Serial.println("HALL MAYBE SKIPPED ");
+    hall_maybe_skip = false;
+  }
+  if (hall_maybe_bounce) {
+    Serial.println("HALL MAYBE BOUNCED ");
+    hall_maybe_bounce = false;
+  }
   switch (state) {
   case stopped:
     if (go) {
@@ -179,6 +204,10 @@ void loop() {
     if (!go) {
       transition(stopping);
     } else {
+      if (mode == manual) {
+        transition(tracking);
+        break;
+      }
       // only run stall check if we're not transitioning
       if (!run_task(&sync, tracking)) {
            run_task(&stall_check, stopped);
@@ -189,6 +218,10 @@ void loop() {
     if (!go) {
       transition(stopping);
     } else {
+      if (mode == manual) {
+        run_task(&manual_speed);
+        break;
+      }
       // only run stall check if we're not transitioning
       if (!run_task(&track, syncing)) {
            run_task(&stall_check, stopped);
@@ -280,13 +313,11 @@ bool sync(unsigned long t, bool init) {
       hall_last_big_d = t;
     }
   }
-  return false;
-//  return (t - hall_last_big_d) > STABLE_D_TIME;
+  return (t - hall_last_big_d) > STABLE_D_TIME;
 }
 
 
 bool stall_check(unsigned long t, bool init) {
-  return false;
   noInterrupts();
     unsigned long last_hall_last_trigger = hall_last_trigger;
   interrupts();
@@ -363,11 +394,17 @@ bool track(unsigned long t, bool init) {
   return false;
 }
 
+bool manual_speed(unsigned long t, bool init) {
+  uint16_t pot = analogRead(SPEED);
+  drive(map(pot, 0, 1023, 1, 1000));
+  return false;
+}
+
 bool gentle_stop(unsigned long t, bool init) {
   if (t > MIN_SPEED) {
     return true;
   }
-  drive(map(t, 0, MIN_SPEED, MIN_SPEED, 0));
+  analogWrite(PWM, map(t, 0, MIN_SPEED, MIN_SPEED, 0));
   return false;
 }
 
