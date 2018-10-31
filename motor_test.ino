@@ -1,11 +1,32 @@
 #define SCALE2 1
-#define PWM 9
-#define DIR A2
-#define ADJ A4
+
+// pins
 #define VSYNC 2
 #define HALL 3
-#define GO 4
-#define SPEED A0
+#define ENC_PULSE_A 4
+#define ENC_BLUE 5
+#define ENC_GREEN 6
+#define ENC_SW 7
+#define PWM 9
+#define ENC_RED 10
+#define DIR 11
+#define ENC_PULSE_B 12
+#define ADJ A0
+#define SHUTTER A1
+#define MODE A2
+#define GO A3
+
+// it's a resistor network into an analog input. numbers checked empirically:
+#define MODE_0_LEVEL 14
+#define MODE_1_LEVEL 244
+#define MODE_2_LEVEL 396
+#define MODE_3_LEVEL 568
+#define MODE_4_LEVEL 1018
+#define MODE_1_THRESH (MODE_0_LEVEL + MODE_1_LEVEL / 2)
+#define MODE_2_THRESH (MODE_1_LEVEL + MODE_2_LEVEL / 2)
+#define MODE_3_THRESH (MODE_2_LEVEL + MODE_3_LEVEL / 2)
+#define MODE_4_THRESH (MODE_3_LEVEL + MODE_4_LEVEL / 2)
+
 
 #define MIN_SPEED 44
 #define MAX_SPEED 150
@@ -36,12 +57,13 @@ enum State {
 };
 
 enum Mode {
-  manual,
-  control,
+  manual_mode,
+  control_mode,
+  vsync_mode,
 };
 
 State state = stopped;
-Mode mode = control;
+Mode mode = manual_mode;
 double last_speed = 0;
 unsigned long last_pid_update = 0;
 unsigned long last_state_change = 0;
@@ -115,6 +137,19 @@ char* state_name(State state) {
   }
 }
 
+char* mode_name(Mode mode) {
+  switch (mode) {
+    case (manual_mode):
+      return "manual";
+    case (control_mode):
+      return "control";
+    case (vsync_mode):
+      return "vsync";
+    default:
+      return "unknown";
+  }
+}
+
 void transition(State next_state) {
   Serial.print("transitioning to ");
   Serial.println(state_name(next_state));
@@ -149,22 +184,54 @@ bool drive(long kspeed, bool reverse = false) {
   return in_range;
 }
 
+
+void update_mode(bool go) {
+  uint16_t m = analogRead(MODE);
+  Mode next_mode;
+  if (m < MODE_2_THRESH) {
+    next_mode = vsync_mode;
+    analogWrite(ENC_BLUE, go ? 127 : 0);
+    digitalWrite(ENC_GREEN, LOW);
+  } else if (m < MODE_3_THRESH) {
+    next_mode = control_mode;
+    analogWrite(ENC_BLUE, go ? 127 : 0);
+    analogWrite(ENC_GREEN, go ? 127 : 0);
+  } else {
+    next_mode = manual_mode;
+    digitalWrite(ENC_BLUE, LOW);
+    analogWrite(ENC_GREEN, go ? 127 : 0);
+  }
+  if (next_mode != mode) {
+    mode = next_mode;
+    Serial.print("changed to to ");
+    Serial.println(mode_name(mode));
+  }
+  analogWrite(ENC_RED, go ? 0 : 127);
+}
+
 void setup() {
+  pinMode(VSYNC, INPUT_PULLUP);
+  pinMode(HALL, INPUT_PULLUP);
+  pinMode(ENC_PULSE_A, INPUT);
+  pinMode(ENC_BLUE, OUTPUT);
+  pinMode(ENC_GREEN, OUTPUT);
+  pinMode(ENC_SW, INPUT);  // TODO: add a pull-down resistor
   pinMode(PWM, OUTPUT);
+  pinMode(ENC_RED, OUTPUT);
   pinMode(DIR, OUTPUT);
+  pinMode(ENC_PULSE_B, INPUT);
   pinMode(ADJ, INPUT);
-  pinMode(VSYNC, INPUT);
-  pinMode(HALL, INPUT);
-  pinMode(GO, INPUT);
-  // input pull-ups
-  digitalWrite(VSYNC, HIGH);
-  digitalWrite(HALL, HIGH);
-  digitalWrite(GO, HIGH);
+  pinMode(SHUTTER, OUTPUT);
+  pinMode(MODE, INPUT_PULLUP);
+  pinMode(GO, INPUT_PULLUP);
 
   // run arduino at half-speed (brings PWM into range for the controller)
   TCCR1B = (TCCR1B & 0b11111000) | 0x01;
-  CLKPR = (1<<CLKPCE);
-  CLKPR = SCALE2;
+  cli();  // no interrupts during clock prescale change
+  CLKPR = _BV(CLKPCE);  // enable a clock change
+  CLKPR = SCALE2;  // actually change. scale = clk / (1 << SCALE2)
+  sei();  // reenable interrupts
+  delay(10);  // let prescale settle, avoid possible serial glitches
 
   attachInterrupt(digitalPinToInterrupt(VSYNC), vsync_trigger, FALLING);  // active-low
   attachInterrupt(digitalPinToInterrupt(HALL), hall_trigger, FALLING);  // active-low
@@ -177,6 +244,7 @@ void setup() {
 
 void loop() {
   bool go = digitalRead(GO) == LOW;
+  update_mode(go);
   if (hall_maybe_skip) {
     Serial.println("HALL MAYBE SKIPPED ");
     hall_maybe_skip = false;
@@ -204,7 +272,7 @@ void loop() {
     if (!go) {
       transition(stopping);
     } else {
-      if (mode == manual) {
+      if (mode == manual_mode) {
         transition(tracking);
         break;
       }
@@ -218,7 +286,7 @@ void loop() {
     if (!go) {
       transition(stopping);
     } else {
-      if (mode == manual) {
+      if (mode == manual_mode) {
         run_task(&manual_speed);
         break;
       }
@@ -241,13 +309,13 @@ bool stop_task(unsigned long t, bool init) {
 
 bool start(unsigned long t, bool init) {
   if (t < 60) {
-    drive(map(t, 0, 60, 0, 200), true);
+    drive(map(t, 0, 60, 0, 150), true);
   } else if (t < 120) {
-    drive(map(t, 60, 120, 200, 0), true);
+    drive(map(t, 60, 120, 150, 0), true);
   } else if (t < 160) {
     drive(0);
   } else if (t < 240) {
-    drive(map(t, 160, 240, 0, 600));
+    drive(map(t, 160, 240, 0, 500));
   } else if (t < 400) {
     drive(map(t, 240, 400, 500, 400));
   } else {
@@ -395,16 +463,16 @@ bool track(unsigned long t, bool init) {
 }
 
 bool manual_speed(unsigned long t, bool init) {
-  uint16_t pot = analogRead(SPEED);
-  drive(map(pot, 0, 1023, 1, 1000));
+  uint16_t pot = analogRead(ADJ);
+  drive(map(pot, 0, 1023, 1000, 1));
   return false;
 }
 
 bool gentle_stop(unsigned long t, bool init) {
-  if (t > MIN_SPEED) {
+  if (t / 2 > MIN_SPEED) {
     return true;
   }
-  analogWrite(PWM, map(t, 0, MIN_SPEED, MIN_SPEED, 0));
+  analogWrite(PWM, map(t / 2, 0, MIN_SPEED, MIN_SPEED, 0));
   return false;
 }
 
