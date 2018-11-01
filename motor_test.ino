@@ -1,5 +1,3 @@
-#define SCALE2 1
-
 // pins
 #define VSYNC 2
 #define HALL 3
@@ -34,6 +32,7 @@
 #define STABLE_D_THRESH 4.0
 #define STABLE_D_TIME 1300 // ms
 
+#define SHUTTER_ANGLE 0.1  // normalized 0-1
 
 #define SCALE2 1
 
@@ -209,6 +208,16 @@ void update_mode(bool go) {
   analogWrite(ENC_RED, go ? 0 : 127);
 }
 
+void update_shutter(bool go, unsigned long now) {
+  if (!go) { // leave shutter open if we're not running
+    digitalWrite(SHUTTER, LOW);
+    return;
+  }
+
+//  unsigned long hall_next_shutoff = hall_last_trigger + (hall_dt_micros * SHUTTER_ANGLE);
+//  digitalWrite(SHUTTER, now < hall_next_shutoff);
+}
+
 void setup() {
   pinMode(VSYNC, INPUT_PULLUP);
   pinMode(HALL, INPUT_PULLUP);
@@ -225,8 +234,9 @@ void setup() {
   pinMode(MODE, INPUT_PULLUP);
   pinMode(GO, INPUT_PULLUP);
 
-  // run arduino at half-speed (brings PWM into range for the controller)
   TCCR1B = (TCCR1B & 0b11111000) | 0x01;
+
+  // run arduino at half-speed (brings PWM into range for the controller)
   cli();  // no interrupts during clock prescale change
   CLKPR = _BV(CLKPCE);  // enable a clock change
   CLKPR = SCALE2;  // actually change. scale = clk / (1 << SCALE2)
@@ -245,6 +255,7 @@ void setup() {
 void loop() {
   bool go = digitalRead(GO) == LOW;
   update_mode(go);
+  update_shutter(go, micros());
   if (hall_maybe_skip) {
     Serial.println("HALL MAYBE SKIPPED ");
     hall_maybe_skip = false;
@@ -432,15 +443,15 @@ bool track(unsigned long t, bool init) {
 //    phase_error_lowpass = phase_error_lowpass * 0.9 + phase_error * 0.1;
     drive(last_output + KPHASE * phase_error);
 
-    Serial.print(target_phase);
-    Serial.print("\t");
-    Serial.print(measured_phase);
-    Serial.print("\t");
-    Serial.print(phase_error);
-    Serial.print("\t");
-//    Serial.print(phase_error_lowpass);
+//    Serial.print(target_phase);
 //    Serial.print("\t");
-    Serial.print(KPHASE * phase_error); 
+//    Serial.print(measured_phase);
+//    Serial.print("\t");
+//    Serial.print(phase_error);
+//    Serial.print("\t");
+////    Serial.print(phase_error_lowpass);
+////    Serial.print("\t");
+//    Serial.print(KPHASE * phase_error); 
 
     last_pid_update = t;
     
@@ -457,7 +468,7 @@ bool track(unsigned long t, bool init) {
       err_count = 0;
     }
 
-    Serial.println();
+//    Serial.println();
   }
   return false;
 }
