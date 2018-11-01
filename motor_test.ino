@@ -5,8 +5,8 @@
 #define ENC_BLUE 5
 #define ENC_GREEN 6
 #define ENC_SW 7
-#define PWM 9
-#define ENC_RED 10
+#define PWM 9  // TIMER1
+#define ENC_RED 10  // TIMER1
 #define DIR 11
 #define ENC_PULSE_B 12
 #define ADJ A0
@@ -25,19 +25,13 @@
 #define MODE_3_THRESH (MODE_2_LEVEL + MODE_3_LEVEL / 2)
 #define MODE_4_THRESH (MODE_3_LEVEL + MODE_4_LEVEL / 2)
 
-
-#define MIN_SPEED 44
-#define MAX_SPEED 150
+#define MIN_SPEED (44 << 2)
+#define MAX_SPEED (150 << 2)
 
 #define STABLE_D_THRESH 4.0
 #define STABLE_D_TIME 1300 // ms
 
 #define SHUTTER_ANGLE 0.1  // normalized 0-1
-
-#define SCALE2 1
-
-#define TI(X) X >> SCALE2  // time delays (arduino -> real world)
-#define TD(X) X << SCALE2  // time measures (real world -> arduino)
 
 #define FPS 20
 #define KP 4.0
@@ -113,7 +107,7 @@ void hall_trigger() {
   hall_dt_micros = dt_micros;
   hall_last_trigger = now;
 
-  double input = TD(hall_dt_micros / 1000);  // to millis
+  double input = hall_dt_micros / 1000;  // to millis
   double err = input - sp;
   hall_d_err = (err - hall_last_err) / input;
   hall_last_err = err;
@@ -159,7 +153,7 @@ void transition(State next_state) {
 
 bool run_task(bool (*task)(unsigned long, bool), State next_state = -1) {
   unsigned long now = millis();
-  bool completed = (*task)(TD(now - last_state_change), fresh_state_change);
+  bool completed = (*task)(now - last_state_change, fresh_state_change);
   if (fresh_state_change) fresh_state_change = false;
   if (completed & next_state != -1) {
     transition(next_state);
@@ -167,18 +161,29 @@ bool run_task(bool (*task)(unsigned long, bool), State next_state = -1) {
   return completed;
 }
 
+void writePWM(uint16_t value) {
+  if (value > 1024) {  // timer1 is configured for 10-bit pwm
+    value = 1024;
+  }
+  OCR1A = value;
+}
+
+void writeEncRed(uint8_t value) {
+  OCR1B = (uint16_t)value << 2;
+}
+
 bool drive(long kspeed, bool reverse = false) {
   bool in_range = true;
   if (kspeed == 0) {
     digitalWrite(DIR, false);  // slightly defensive: set direction to forward
-    analogWrite(PWM, 0);
+    writePWM(0);
   } else {
     digitalWrite(DIR, reverse);
     if (kspeed > 1000) {
       kspeed = 1000;
       in_range = false;
     }
-    analogWrite(PWM, map(kspeed, 1, 1000, MIN_SPEED, MAX_SPEED));
+    writePWM(map(kspeed, 1, 1000, MIN_SPEED, MAX_SPEED));
   }
   return in_range;
 }
@@ -205,7 +210,7 @@ void update_mode(bool go) {
     Serial.print("changed to to ");
     Serial.println(mode_name(mode));
   }
-  analogWrite(ENC_RED, go ? 0 : 127);
+  writeEncRed(go ? 0 : 127);
 }
 
 void update_shutter(bool go, unsigned long now) {
@@ -234,19 +239,22 @@ void setup() {
   pinMode(MODE, INPUT_PULLUP);
   pinMode(GO, INPUT_PULLUP);
 
-  TCCR1B = (TCCR1B & 0b11111000) | 0x01;
+  // shortcut pwm setup for timer1
+  analogWrite(PWM, 1);
+  analogWrite(ENC_RED, 1);
 
-  // run arduino at half-speed (brings PWM into range for the controller)
-  cli();  // no interrupts during clock prescale change
-  CLKPR = _BV(CLKPCE);  // enable a clock change
-  CLKPR = SCALE2;  // actually change. scale = clk / (1 << SCALE2)
-  sei();  // reenable interrupts
-  delay(10);  // let prescale settle, avoid possible serial glitches
+  // timer1 no prescale
+  TCCR1B = (TCCR1B & 0b11111000) | 0b001;
+
+  // timer1 fast 10-bit (mode 7, WGM0111, 16 MHz / 10 bits == 15.625 kHz)
+  TCCR1A |= _BV(WGM10) | _BV(WGM11);
+  TCCR1B |= _BV(WGM12);
+  TCCR1B &= ~_BV(WGM13);
 
   attachInterrupt(digitalPinToInterrupt(VSYNC), vsync_trigger, FALLING);  // active-low
   attachInterrupt(digitalPinToInterrupt(HALL), hall_trigger, FALLING);  // active-low
 
-  Serial.begin(TD(115200));
+  Serial.begin(115200);
   while (!Serial);
   Serial.println("setup complete.");
   transition(stopped);
@@ -351,7 +359,7 @@ bool sync(unsigned long t, bool init) {
       unsigned long last_hall_dt_micros = hall_dt_micros;
       double last_hall_d_err = hall_d_err;
     interrupts();
-    double input = TD(last_hall_dt_micros / 1000);  // to millis
+    double input = last_hall_dt_micros / 1000;  // to millis
     double err = input - sp;
     double curr_err_sum = err_sum + err * dt;
     if (KI * curr_err_sum < 0) {
@@ -401,7 +409,7 @@ bool stall_check(unsigned long t, bool init) {
     unsigned long last_hall_last_trigger = hall_last_trigger;
   interrupts();
   unsigned long now_raw_micros = micros();
-  unsigned long dt_last = TD((now_raw_micros - last_hall_last_trigger) / 1000);
+  unsigned long dt_last = (now_raw_micros - last_hall_last_trigger) / 1000;
   if (dt_last > sp * 8) {
     Serial.print("stalled? ");
     Serial.print(dt_last);
@@ -455,7 +463,7 @@ bool track(unsigned long t, bool init) {
 
     last_pid_update = t;
     
-    double input = TD(last_hall_dt_micros / 1000);  // to millis
+    double input = last_hall_dt_micros / 1000;  // to millis
     double err = abs(input - sp) / sp;
     if (err > 0.1) {
       err_count++;
@@ -483,7 +491,7 @@ bool gentle_stop(unsigned long t, bool init) {
   if (t / 2 > MIN_SPEED) {
     return true;
   }
-  analogWrite(PWM, map(t / 2, 0, MIN_SPEED, MIN_SPEED, 0));
+  writePWM(map(t / 2, 0, MIN_SPEED, MIN_SPEED, 0));
   return false;
 }
 
