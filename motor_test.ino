@@ -31,9 +31,13 @@
 #define STABLE_D_THRESH 4.0
 #define STABLE_D_TIME 1300 // ms
 
-#define SHUTTER_ANGLE 0.1  // normalized 0-1
+//double shutter_phase = 0.55; // normalized 0-1
+//double shutter_angle = 0.27;  // normalized 0-1
 
-#define FPS 20
+double shutter_phase = 0.52; // normalized 0-1
+double shutter_angle = 0.22;  // normalized 0-1
+
+#define FPS 24
 #define KP 4.0
 #define KI 0.04
 #define KD -38.0
@@ -65,6 +69,9 @@ volatile unsigned long vsync_last_trigger = 0;
 volatile unsigned long vsync_last_last_trigger = 0;
 volatile unsigned long hall_last_trigger = 0;
 volatile unsigned long hall_dt_micros;
+
+volatile uint16_t ticks_to_shutter_close;
+volatile uint16_t ticks_to_shutter_open;
 
 volatile double hall_d_err = 0;
 volatile double hall_last_err = 0;
@@ -99,6 +106,7 @@ void vsync_trigger() {
 void hall_trigger() {
   unsigned long now = micros();
   unsigned long dt_micros = now - hall_last_trigger;
+
   if (dt_micros > hall_dt_micros * 1.667) {
     hall_maybe_skip = true;
   } else if (dt_micros < hall_dt_micros / 3) {
@@ -111,7 +119,40 @@ void hall_trigger() {
   double err = input - sp;
   hall_d_err = (err - hall_last_err) / input;
   hall_last_err = err;
+
+  // set up for shutter close
+  unsigned long micros_to_shutter_close = dt_micros * shutter_phase;
+  ticks_to_shutter_close = micros_to_shutter_close / 1000;
+  uint16_t rem = micros_to_shutter_close % 1000;
+  uint16_t rem_ticks = rem / 4;
+  OCR0A = TCNT0 + rem_ticks;  
+  if (SREG & B00000001) {
+    ticks_to_shutter_close++;
+  }
 }
+
+ISR(TIMER0_COMPA_vect) {
+  if (ticks_to_shutter_open > 0) {
+    if (--ticks_to_shutter_open == 0) {
+      digitalWrite(SHUTTER, LOW);
+    }
+  }
+  if (ticks_to_shutter_close > 0) {
+    if (--ticks_to_shutter_close == 0) {
+      digitalWrite(SHUTTER, HIGH);
+    }
+    // set up for shutter open
+    unsigned long micros_to_shutter_open = hall_dt_micros * shutter_angle;
+    ticks_to_shutter_open = micros_to_shutter_open / 1000;
+    uint16_t rem = micros_to_shutter_open % 1000;
+    uint16_t rem_ticks = rem / 4;
+    OCR0A = TCNT0 + rem_ticks;  
+    if (SREG & B00000001) {
+      ticks_to_shutter_open++;
+    }
+  }
+}
+
 
 char* state_name(State state) {
   switch (state) {
@@ -213,16 +254,6 @@ void update_mode(bool go) {
   writeEncRed(go ? 0 : 127);
 }
 
-void update_shutter(bool go, unsigned long now) {
-  if (!go) { // leave shutter open if we're not running
-    digitalWrite(SHUTTER, LOW);
-    return;
-  }
-
-//  unsigned long hall_next_shutoff = hall_last_trigger + (hall_dt_micros * SHUTTER_ANGLE);
-//  digitalWrite(SHUTTER, now < hall_next_shutoff);
-}
-
 void setup() {
   pinMode(VSYNC, INPUT_PULLUP);
   pinMode(HALL, INPUT_PULLUP);
@@ -254,6 +285,9 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(VSYNC), vsync_trigger, FALLING);  // active-low
   attachInterrupt(digitalPinToInterrupt(HALL), hall_trigger, FALLING);  // active-low
 
+  // timer0 interrupt for shutter closing
+  TIMSK0 |= _BV(OCIE0A);
+
   Serial.begin(115200);
   while (!Serial);
   Serial.println("setup complete.");
@@ -263,7 +297,6 @@ void setup() {
 void loop() {
   bool go = digitalRead(GO) == LOW;
   update_mode(go);
-  update_shutter(go, micros());
   if (hall_maybe_skip) {
     Serial.println("HALL MAYBE SKIPPED ");
     hall_maybe_skip = false;
