@@ -138,7 +138,7 @@ ISR(TIMER0_COMPA_vect) {
     }
   }
   if (ticks_to_shutter_close > 0) {
-    if (--ticks_to_shutter_close == 0) {
+    if (--ticks_to_shutter_close == 0 && state != stopped) {
       digitalWrite(SHUTTER, HIGH);
     }
     // set up for shutter open
