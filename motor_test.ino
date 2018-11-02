@@ -5,6 +5,7 @@
 #define ENC_BLUE 5
 #define ENC_GREEN 6
 #define ENC_SW 7
+#define SHUTTER_ENABLE 8
 #define PWM 9  // TIMER1
 #define ENC_RED 10  // TIMER1
 #define DIR 11
@@ -70,6 +71,7 @@ volatile unsigned long vsync_last_last_trigger = 0;
 volatile unsigned long hall_last_trigger = 0;
 volatile unsigned long hall_dt_micros;
 
+bool shutter_enabled = true;
 volatile uint16_t ticks_to_shutter_close;
 volatile uint16_t ticks_to_shutter_open;
 
@@ -127,7 +129,7 @@ void hall_trigger() {
   uint16_t rem_ticks = rem / 4;
   OCR0A = TCNT0 + rem_ticks;  
   if (SREG & B00000001) {
-    ticks_to_shutter_close++;
+//    ticks_to_shutter_close++;
   }
 }
 
@@ -138,7 +140,7 @@ ISR(TIMER0_COMPA_vect) {
     }
   }
   if (ticks_to_shutter_close > 0) {
-    if (--ticks_to_shutter_close == 0 && state != stopped) {
+    if (--ticks_to_shutter_close == 0 && state != stopped && shutter_enabled) {
       digitalWrite(SHUTTER, HIGH);
     }
     // set up for shutter open
@@ -148,7 +150,7 @@ ISR(TIMER0_COMPA_vect) {
     uint16_t rem_ticks = rem / 4;
     OCR0A = TCNT0 + rem_ticks;  
     if (SREG & B00000001) {
-      ticks_to_shutter_open++;
+//      ticks_to_shutt  er_open++;
     }
   }
 }
@@ -261,6 +263,7 @@ void setup() {
   pinMode(ENC_BLUE, OUTPUT);
   pinMode(ENC_GREEN, OUTPUT);
   pinMode(ENC_SW, INPUT);  // TODO: add a pull-down resistor
+  pinMode(SHUTTER_ENABLE, INPUT_PULLUP);
   pinMode(PWM, OUTPUT);
   pinMode(ENC_RED, OUTPUT);
   pinMode(DIR, OUTPUT);
@@ -297,6 +300,7 @@ void setup() {
 void loop() {
   bool go = digitalRead(GO) == LOW;
   update_mode(go);
+  shutter_enabled = digitalRead(SHUTTER_ENABLE) == LOW;
   if (hall_maybe_skip) {
     Serial.println("HALL MAYBE SKIPPED ");
     hall_maybe_skip = false;
@@ -355,7 +359,10 @@ void loop() {
 }
 
 bool stop_task(unsigned long t, bool init) {
-  if (init) drive(0);
+  if (init) {
+    drive(0);
+    digitalWrite(SHUTTER, LOW);
+  }
   return true;
 }
 
