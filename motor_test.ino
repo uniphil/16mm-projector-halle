@@ -38,7 +38,7 @@
 double shutter_phase = 0.52; // normalized 0-1
 double shutter_angle = 0.22;  // normalized 0-1
 
-#define FPS 24
+#define FPS 30
 #define KP 4.0
 #define KI 0.04
 #define KD -38.0
@@ -211,8 +211,10 @@ void writePWM(uint16_t value) {
   OCR1A = value;
 }
 
-void writeEncRed(uint8_t value) {
-  OCR1B = (uint16_t)value << 2;
+void encRGBWrite(uint8_t r, uint8_t g, uint8_t b) {
+  OCR1B = (uint16_t)(255 - r) << 2;
+  analogWrite(ENC_GREEN, 255 - g);
+  analogWrite(ENC_BLUE, 255 - b);
 }
 
 bool drive(long kspeed, bool reverse = false) {
@@ -237,23 +239,19 @@ void update_mode(bool go) {
   Mode next_mode;
   if (m < MODE_2_THRESH) {
     next_mode = vsync_mode;
-    analogWrite(ENC_BLUE, go ? 127 : 0);
-    digitalWrite(ENC_GREEN, LOW);
+    encRGBWrite(64, 0, 192);
   } else if (m < MODE_3_THRESH) {
     next_mode = control_mode;
-    analogWrite(ENC_BLUE, go ? 127 : 0);
-    analogWrite(ENC_GREEN, go ? 127 : 0);
+    encRGBWrite(0, 160, 127);
   } else {
     next_mode = manual_mode;
-    digitalWrite(ENC_BLUE, LOW);
-    analogWrite(ENC_GREEN, go ? 127 : 0);
+    encRGBWrite(127, 160, 0);
   }
   if (next_mode != mode) {
     mode = next_mode;
     Serial.print("changed to to ");
     Serial.println(mode_name(mode));
   }
-  writeEncRed(go ? 0 : 127);
 }
 
 void setup() {
@@ -521,9 +519,17 @@ bool track(unsigned long t, bool init) {
   return false;
 }
 
+unsigned long last_fps_update = 0;
 bool manual_speed(unsigned long t, bool init) {
   uint16_t pot = analogRead(ADJ);
-  drive(map(pot, 0, 1023, 1000, 1));
+  uint16_t level = map(pot, 0, 1023, 1000, 1);
+  drive(level);
+  if (t - last_fps_update > 500) {
+    Serial.print(level);
+    Serial.print('\t');
+    Serial.println(1.0 / hall_dt_micros * 1000000);
+    last_fps_update = t;
+  }
   return false;
 }
 
