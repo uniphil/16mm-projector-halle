@@ -84,6 +84,7 @@ volatile bool hall_maybe_bounce = false;
 unsigned long hall_last_big_d = 0;
 
 double sp = 1.0 / FPS * 1000;  // millis
+unsigned long shutter_closed_millis = 1000 * shutter_angle / FPS;
 
 unsigned long update_interval = sp / 10;  // 10x dead time
 
@@ -99,11 +100,16 @@ typedef struct {
   double last_err;
 } pid;
 
+#define vsync_div 2
+volatile uint8_t vsync_count = 0;
 void vsync_trigger() {
+  vsync_count = (vsync_count + 1) % vsync_div;
+  if (vsync_count != 0) {
+    return;
+  }
   vsync_last_last_trigger = vsync_last_trigger;
   vsync_last_trigger = micros();
 }
-
 
 void hall_trigger() {
   unsigned long now = micros();
@@ -128,10 +134,12 @@ void hall_trigger() {
   uint16_t rem = micros_to_shutter_close % 1000;
   uint16_t rem_ticks = rem / 4;
   OCR0A = TCNT0 + rem_ticks;  
+  // if the timer overflowed while in this isr, drop a tick
   if (SREG & B00000001) {
-//    ticks_to_shutter_close++;
+    ticks_to_shutter_close++;
   }
 }
+
 
 ISR(TIMER0_COMPA_vect) {
   if (ticks_to_shutter_open > 0) {
@@ -144,13 +152,18 @@ ISR(TIMER0_COMPA_vect) {
       digitalWrite(SHUTTER, HIGH);
     }
     // set up for shutter open
-    unsigned long micros_to_shutter_open = hall_dt_micros * shutter_angle;
-    ticks_to_shutter_open = micros_to_shutter_open / 1000;
-    uint16_t rem = micros_to_shutter_open % 1000;
-    uint16_t rem_ticks = rem / 4;
-    OCR0A = TCNT0 + rem_ticks;  
+    if (mode == manual_mode) {
+      unsigned long micros_to_shutter_open = hall_dt_micros * shutter_angle;
+      ticks_to_shutter_open = micros_to_shutter_open / 1000;
+      uint16_t rem = micros_to_shutter_open % 1000;
+      uint16_t rem_ticks = rem / 4;
+      OCR0A = TCNT0 + rem_ticks;
+    } else {
+      ticks_to_shutter_open = shutter_closed_millis;
+    }
+    // if the timer overflowed while in this isr, pick up an extra tick
     if (SREG & B00000001) {
-//      ticks_to_shutt  er_open++;
+      ticks_to_shutter_open++;
     }
   }
 }
@@ -296,6 +309,8 @@ void setup() {
 }
 
 void loop() {
+//  Serial.print("vlt ");  // 33340 33344
+//  Serial.println(vsync_last_trigger - vsync_last_last_trigger);
   bool go = digitalRead(GO) == LOW;
   update_mode(go);
   shutter_enabled = digitalRead(SHUTTER_ENABLE) == LOW;
@@ -470,7 +485,17 @@ bool track(unsigned long t, bool init) {
     err_count = 0;
   }
   if (t - last_pid_update >= update_interval) {
-    double target_phase = (t % (unsigned int)sp) / sp;
+    double target_phase;
+    if (mode == control_mode) {
+      target_phase = (t % (unsigned int)sp) / sp;
+    } else {
+      noInterrupts();
+        double set = (vsync_last_trigger - vsync_last_last_trigger) / 1000.0;
+      interrupts();
+      target_phase = (t % (unsigned int)set) / set;
+//      Serial.print("target ");
+//      Serial.println(target_phase);
+    }
     noInterrupts();
       unsigned long last_hall_last_trigger = hall_last_trigger;
       unsigned long last_hall_dt_micros = hall_dt_micros;
@@ -489,15 +514,15 @@ bool track(unsigned long t, bool init) {
 //    phase_error_lowpass = phase_error_lowpass * 0.9 + phase_error * 0.1;
     drive(last_output + KPHASE * phase_error);
 
-//    Serial.print(target_phase);
+    Serial.print(target_phase);
+    Serial.print("\t");
+    Serial.print(measured_phase);
+    Serial.print("\t");
+    Serial.print(phase_error);
+    Serial.print("\t");
+//    Serial.print(phase_error_lowpass);
 //    Serial.print("\t");
-//    Serial.print(measured_phase);
-//    Serial.print("\t");
-//    Serial.print(phase_error);
-//    Serial.print("\t");
-////    Serial.print(phase_error_lowpass);
-////    Serial.print("\t");
-//    Serial.print(KPHASE * phase_error); 
+    Serial.print(KPHASE * phase_error); 
 
     last_pid_update = t;
     
@@ -514,7 +539,7 @@ bool track(unsigned long t, bool init) {
       err_count = 0;
     }
 
-//    Serial.println();
+    Serial.println();
   }
   return false;
 }
