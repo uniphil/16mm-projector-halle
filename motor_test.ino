@@ -29,6 +29,8 @@
 #define MIN_SPEED (44 << 2)
 #define MAX_SPEED (140 << 2)
 
+#define PULSE_PERIOD 200
+
 #define STABLE_D_THRESH 4.0
 #define STABLE_D_TIME 1300 // ms
 
@@ -38,7 +40,7 @@
 double shutter_phase = 0.52; // normalized 0-1
 double shutter_angle = 0.22;  // normalized 0-1
 
-#define FPS 30
+double FPS = 24;
 #define KP 4.0
 #define KI 0.04
 #define KD -38.0
@@ -247,15 +249,28 @@ bool drive(long kspeed, bool reverse = false) {
 }
 
 
+bool pulse() {
+  return (millis() % PULSE_PERIOD) < (PULSE_PERIOD * 2 / 3);
+}
+
+
 void update_mode(bool go) {
   uint16_t m = analogRead(MODE);
   Mode next_mode;
   if (m < MODE_2_THRESH) {
-    next_mode = vsync_mode;
-    encRGBWrite(64, 0, 192);
-  } else if (m < MODE_3_THRESH) {
     next_mode = control_mode;
-    encRGBWrite(0, 160, 127);
+    FPS = 18;
+    sp = 1.0 / FPS * 1000;
+    (state == syncing && pulse())
+      ? encRGBWrite(0, 255, 0)
+      : encRGBWrite(64, 0, 192);
+  } else if (m < MODE_3_THRESH) {
+    FPS = 24;
+    sp = 1.0 / FPS * 1000;
+    next_mode = control_mode;
+    (state == syncing && pulse())
+      ? encRGBWrite(0, 255, 0)
+      : encRGBWrite(0, 64, 127);
   } else {
     next_mode = manual_mode;
     encRGBWrite(127, 160, 0);
@@ -479,20 +494,29 @@ bool stall_check(unsigned long t, bool init) {
 uint8_t err_count = 0;
 //double phase_error_lowpass = 0;
 
+double last_adj = 0;
+
 bool track(unsigned long t, bool init) {
   // phase-lock
   if (init) {
     err_count = 0;
   }
   if (t - last_pid_update >= update_interval) {
+    double adj = analogRead(ADJ) / 1023.0 - 0.5;
+//    if (adj != last_adj) {
+//      Serial.print("adj ");
+//      Serial.println(adj);
+//      last_adj = adj;
+//    }
     double target_phase;
     if (mode == control_mode) {
-      target_phase = (t % (unsigned int)sp) / sp;
+      unsigned long now = micros();
+      target_phase = (now % (unsigned int)((sp + adj) * 1000)) / ((sp + adj) * 1000);
     } else {
       noInterrupts();
         double set = (vsync_last_trigger - vsync_last_last_trigger) / 1000.0;
       interrupts();
-      target_phase = (t % (unsigned int)set) / set;
+      target_phase = (t % (unsigned int)(set + adj)) / (set + adj);
 //      Serial.print("target ");
 //      Serial.println(target_phase);
     }
@@ -514,15 +538,15 @@ bool track(unsigned long t, bool init) {
 //    phase_error_lowpass = phase_error_lowpass * 0.9 + phase_error * 0.1;
     drive(last_output + KPHASE * phase_error);
 
-    Serial.print(target_phase);
-    Serial.print("\t");
-    Serial.print(measured_phase);
-    Serial.print("\t");
-    Serial.print(phase_error);
-    Serial.print("\t");
-//    Serial.print(phase_error_lowpass);
+//    Serial.print(target_phase);
 //    Serial.print("\t");
-    Serial.print(KPHASE * phase_error); 
+//    Serial.print(measured_phase);
+//    Serial.print("\t");
+//    Serial.print(phase_error);
+//    Serial.print("\t");
+////    Serial.print(phase_error_lowpass);
+////    Serial.print("\t");
+//    Serial.print(KPHASE * phase_error); 
 
     last_pid_update = t;
     
@@ -539,7 +563,7 @@ bool track(unsigned long t, bool init) {
       err_count = 0;
     }
 
-    Serial.println();
+//    Serial.println();
   }
   return false;
 }
