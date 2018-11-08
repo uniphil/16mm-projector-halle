@@ -27,7 +27,7 @@
 #define MODE_4_THRESH (MODE_3_LEVEL + MODE_4_LEVEL / 2)
 
 #define MIN_SPEED (44 << 2)
-#define MAX_SPEED (150 << 2)
+#define MAX_SPEED (140 << 2)
 
 #define STABLE_D_THRESH 4.0
 #define STABLE_D_TIME 1300 // ms
@@ -546,8 +546,10 @@ bool track(unsigned long t, bool init) {
 
 unsigned long last_fps_update = 0;
 bool manual_speed(unsigned long t, bool init) {
-  uint16_t pot = analogRead(ADJ);
-  uint16_t level = map(pot, 0, 1023, 1000, 1);
+  uint16_t pot = 1023 - analogRead(ADJ);
+  float normalized = pot / 1023.0;
+  float curved = pow(normalized, 2);
+  uint16_t level = map(curved * 1023, 0, 1023, 1, 1000);
   drive(level);
   if (t - last_fps_update > 500) {
     Serial.print(level);
