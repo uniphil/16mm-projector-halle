@@ -1,15 +1,15 @@
 // pins
 #define VSYNC 2
 #define HALL 3
-#define ENC_PULSE_A 4
+#define ENC_PULSE_A 4  // PCINT20
 #define ENC_BLUE 5
 #define ENC_GREEN 6
 #define ENC_SW 7
 #define SHUTTER_ENABLE 8
-#define PWM 9  // TIMER1
-#define ENC_RED 10  // TIMER1
+#define PWM 9  // on TIMER1
+#define ENC_RED 10  // on TIMER1
 #define DIR 11
-#define ENC_PULSE_B 12
+#define ENC_PULSE_B 12  // PCINT4
 #define ADJ A0
 #define SHUTTER A1
 #define MODE A2
@@ -33,6 +33,9 @@
 
 #define STABLE_D_THRESH 4.0
 #define STABLE_D_TIME 1300 // ms
+
+static const byte ENC_SEQ[] = { B11, B01, B00, B10 };
+static const byte ENC_STEP[] = { /*00*/2, /*01*/1, /*10*/3, /*11*/0 };
 
 //double shutter_phase = 0.55; // normalized 0-1
 //double shutter_angle = 0.27;  // normalized 0-1
@@ -85,6 +88,9 @@ volatile double hall_last_err = 0;
 
 volatile bool hall_maybe_skip = false;
 volatile bool hall_maybe_bounce = false;
+
+volatile byte enc_current_state = B11;
+volatile int enc_change = 0;
 
 unsigned long hall_last_big_d = 0;
 
@@ -171,6 +177,31 @@ ISR(TIMER0_COMPA_vect) {
       ticks_to_shutter_open++;
     }
   }
+}
+
+ISR (PCINT2_vect) {  // for pin 4 / PCINT20 / ENC_PULSE_A
+  byte new_state = B10 & enc_current_state | ((B10000 & PIND) >> 4);
+  enc_update(new_state);
+}
+
+ISR (PCINT0_vect) {  // for pin 12 / PCINT4 / ENC_PULSE_B
+  byte new_state = B01 & enc_current_state | ((B10000 & PINB) >> 3);
+  enc_update(new_state);
+}
+
+void enc_update(byte new_state) {
+  uint8_t seq_step = ENC_STEP[enc_current_state];
+  uint8_t next_step = (seq_step + 1) % 4;
+  uint8_t prev_step = (seq_step + 4 - 1) % 4;
+  if (new_state == ENC_SEQ[next_step]) {
+    enc_change += 1;
+  } else if (new_state == ENC_SEQ[prev_step]) {
+    enc_change -= 1;
+  } else {
+    // weird
+    return;
+  }
+  enc_current_state = new_state;
 }
 
 
@@ -325,6 +356,12 @@ void setup() {
 
   // timer0 interrupt for shutter closing
   TIMSK0 |= _BV(OCIE0A);
+
+  // encoder pin change interrupt setup
+  PCMSK2 |= _BV(PCINT20);  // pin 4
+  PCMSK0 |= _BV(PCINT4);  // pin 12
+  PCIFR  |= _BV(PCIF2) | _BV(PCIF0);    // clear any outstanding interrupts
+  PCICR  |= _BV(PCIE2) | _BV(PCIE0);    // pcie 0 and 2 (digital 0-7 and 8-13)
 
   Serial.begin(115200);
   while (!Serial);
