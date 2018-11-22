@@ -265,24 +265,24 @@ void update_mode(bool go) {
   uint16_t m = analogRead(MODE);
   Mode next_mode;
   if (m < MODE_1_THRESH) {
-    next_mode = rewind_mode;
-    go && pulse() ? encRGBWrite(64, 0, 1)
-                  : encRGBWrite(128, 12, 0);
-  } else if (m < MODE_2_THRESH) {
     adjusting = true;
     next_mode = control_mode;
     (state == syncing && pulse())
       ? encRGBWrite(0, 255, 0)
       : encRGBWrite(64, 0, 192);
-  } else if (m < MODE_3_THRESH) {
+  } else if (m < MODE_2_THRESH) {
     adjusting = false;
     next_mode = control_mode;
     (state == syncing && pulse())
       ? encRGBWrite(0, 255, 0)
       : encRGBWrite(0, 64, 127);
-  } else {
+  } else if (m < MODE_3_THRESH) {
     next_mode = manual_mode;
     encRGBWrite(127, 160, 0);
+  } else {
+    next_mode = rewind_mode;
+    go && pulse() ? encRGBWrite(64, 0, 1)
+                  : encRGBWrite(128, 12, 0);
   }
   if (next_mode != mode) {
     mode = next_mode;
