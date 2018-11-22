@@ -40,7 +40,8 @@
 double shutter_phase = 0.52; // normalized 0-1
 double shutter_angle = 0.22;  // normalized 0-1
 
-double FPS = 24;
+double FPS = 23.95;
+bool adjusting = false;
 #define KP 4.0
 #define KI 0.04
 #define KD -38.0
@@ -54,12 +55,14 @@ enum State {
   syncing,
   tracking,
   stopping,
+  rewinding,
 };
 
 enum Mode {
   manual_mode,
   control_mode,
   vsync_mode,
+  rewind_mode,
 };
 
 State state = stopped;
@@ -183,6 +186,8 @@ char* state_name(State state) {
       return "tracking";
     case (stopping):
       return "stopping";
+    case (rewinding):
+      return "rewinding";
     default:
       return "unknown";
   }
@@ -196,6 +201,8 @@ char* mode_name(Mode mode) {
       return "control";
     case (vsync_mode):
       return "vsync";
+    case (rewind_mode):
+      return "rewind";
     default:
       return "unknown";
   }
@@ -257,16 +264,18 @@ bool pulse() {
 void update_mode(bool go) {
   uint16_t m = analogRead(MODE);
   Mode next_mode;
-  if (m < MODE_2_THRESH) {
+  if (m < MODE_1_THRESH) {
+    next_mode = rewind_mode;
+    go && pulse() ? encRGBWrite(100, 0, 0)
+                  : encRGBWrite(128, 16, 0);
+  } else if (m < MODE_2_THRESH) {
+    adjusting = true;
     next_mode = control_mode;
-    FPS = 18;
-    sp = 1.0 / FPS * 1000;
     (state == syncing && pulse())
       ? encRGBWrite(0, 255, 0)
       : encRGBWrite(64, 0, 192);
   } else if (m < MODE_3_THRESH) {
-    FPS = 24;
-    sp = 1.0 / FPS * 1000;
+    adjusting = false;
     next_mode = control_mode;
     (state == syncing && pulse())
       ? encRGBWrite(0, 255, 0)
@@ -324,8 +333,6 @@ void setup() {
 }
 
 void loop() {
-//  Serial.print("vlt ");  // 33340 33344
-//  Serial.println(vsync_last_trigger - vsync_last_last_trigger);
   bool go = digitalRead(GO) == LOW;
   update_mode(go);
   shutter_enabled = digitalRead(SHUTTER_ENABLE) == LOW;
@@ -349,6 +356,9 @@ void loop() {
     if (!go) {
       transition(stopping);
     } else {
+      if (mode == rewind_mode) {
+        transition(rewinding);
+      }
       run_task(&start, syncing);
     }
     break;
@@ -379,6 +389,12 @@ void loop() {
            run_task(&stall_check, stopped);
       }
     }
+    break;
+  case rewinding:
+    if (!go) {
+      transition(stopping);
+    }
+    run_task(&manual_rewind, stopped);
     break;
   case stopping:
     run_task(&gentle_stop, stopped);
@@ -492,9 +508,8 @@ bool stall_check(unsigned long t, bool init) {
 
 
 uint8_t err_count = 0;
-//double phase_error_lowpass = 0;
 
-double last_adj = 0;
+double adj = 0;
 
 bool track(unsigned long t, bool init) {
   // phase-lock
@@ -502,12 +517,9 @@ bool track(unsigned long t, bool init) {
     err_count = 0;
   }
   if (t - last_pid_update >= update_interval) {
-    double adj = analogRead(ADJ) / 1023.0 - 0.5;
-//    if (adj != last_adj) {
-//      Serial.print("adj ");
-//      Serial.println(adj);
-//      last_adj = adj;
-//    }
+    if (adjusting) {
+      adj = analogRead(ADJ) / 1023.0 - 0.5;
+    }
     double target_phase;
     if (mode == control_mode) {
       unsigned long now = micros();
@@ -534,8 +546,6 @@ bool track(unsigned long t, bool init) {
       phase_error += 1;
     }
 
-    
-//    phase_error_lowpass = phase_error_lowpass * 0.9 + phase_error * 0.1;
     drive(last_output + KPHASE * phase_error);
 
 //    Serial.print(target_phase);
@@ -544,8 +554,6 @@ bool track(unsigned long t, bool init) {
 //    Serial.print("\t");
 //    Serial.print(phase_error);
 //    Serial.print("\t");
-////    Serial.print(phase_error_lowpass);
-////    Serial.print("\t");
 //    Serial.print(KPHASE * phase_error); 
 
     last_pid_update = t;
@@ -575,6 +583,21 @@ bool manual_speed(unsigned long t, bool init) {
   float curved = pow(normalized, 2);
   uint16_t level = map(curved * 1023, 0, 1023, 1, 1000);
   drive(level);
+  if (t - last_fps_update > 500) {
+    Serial.print(level);
+    Serial.print('\t');
+    Serial.println(1.0 / hall_dt_micros * 1000000);
+    last_fps_update = t;
+  }
+  return false;
+}
+
+bool manual_rewind(unsigned long t, bool init) {
+  uint16_t pot = 1023 - analogRead(ADJ);
+  float normalized = pot / 1023.0;
+  float curved = pow(normalized, 2);
+  uint16_t level = map(curved * 1023, 0, 1023, 1, 1000);
+  drive(level, true);
   if (t - last_fps_update > 500) {
     Serial.print(level);
     Serial.print('\t');
