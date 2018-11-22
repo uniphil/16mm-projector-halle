@@ -266,8 +266,8 @@ void update_mode(bool go) {
   Mode next_mode;
   if (m < MODE_1_THRESH) {
     next_mode = rewind_mode;
-    go && pulse() ? encRGBWrite(100, 0, 0)
-                  : encRGBWrite(128, 16, 0);
+    go && pulse() ? encRGBWrite(64, 0, 1)
+                  : encRGBWrite(128, 12, 0);
   } else if (m < MODE_2_THRESH) {
     adjusting = true;
     next_mode = control_mode;
@@ -370,6 +370,9 @@ void loop() {
         transition(tracking);
         break;
       }
+      if (mode == rewind_mode) {
+        transition(stopping);
+      }
       // only run stall check if we're not transitioning
       if (!run_task(&sync, tracking)) {
            run_task(&stall_check, stopped);
@@ -384,6 +387,9 @@ void loop() {
         run_task(&manual_speed);
         break;
       }
+      if (mode == rewind_mode) {
+        transition(stopping);
+      }
       // only run stall check if we're not transitioning
       if (!run_task(&track, syncing)) {
            run_task(&stall_check, stopped);
@@ -393,6 +399,9 @@ void loop() {
   case rewinding:
     if (!go) {
       transition(stopping);
+    }
+    if (mode != rewind_mode) {
+      transition(starting);
     }
     run_task(&manual_rewind, stopped);
     break;
