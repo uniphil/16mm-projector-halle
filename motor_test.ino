@@ -9,7 +9,7 @@
 #define ENC_PULSE_A 4  // PCINT20
 #define ENC_BLUE 5
 #define ENC_GREEN 6
-#define ENC_SW 7
+#define ENC_SW 7  // HIGH when pressed
 #define SHUTTER_ENABLE 8
 #define PWM 9  // on TIMER1
 #define ENC_RED 10  // on TIMER1
@@ -362,7 +362,7 @@ void setup() {
   pinMode(ENC_PULSE_A, INPUT);
   pinMode(ENC_BLUE, OUTPUT);
   pinMode(ENC_GREEN, OUTPUT);
-  pinMode(ENC_SW, INPUT);  // TODO: add a pull-down resistor
+  pinMode(ENC_SW, INPUT);  // pull-down, everything enc is backward
   pinMode(SHUTTER_ENABLE, INPUT_PULLUP);
   pinMode(PWM, OUTPUT);
   pinMode(ENC_RED, OUTPUT);
@@ -674,12 +674,11 @@ bool track(unsigned long t, bool init) {
   return false;
 }
 
+
 unsigned long last_fps_update = 0;
 bool manual_speed(unsigned long t, bool init) {
-  uint16_t pot = 1023 - analogRead(ADJ);
-  float normalized = pot / 1023.0;
-  float curved = pow(normalized, 2);
-  uint16_t level = map(curved * 1023, 0, 1023, 1, 1000);
+  uint16_t pot = analogRead(ADJ);
+  uint16_t level = map(pot, 0, 1023, 1, 1000);
   drive(level);
   if (t - last_fps_update > 500) {
     Serial.print(level);
@@ -691,10 +690,8 @@ bool manual_speed(unsigned long t, bool init) {
 }
 
 bool manual_rewind(unsigned long t, bool init) {
-  uint16_t pot = 1023 - analogRead(ADJ);
-  float normalized = pot / 1023.0;
-  float curved = pow(normalized, 2);
-  uint16_t level = map(curved * 1023, 0, 1023, 1, 1000);
+  uint16_t pot = analogRead(ADJ);
+  uint16_t level = map(pot, 0, 1023, 1, 1000);
   drive(level, true);
   if (t - last_fps_update > 500) {
     Serial.print(level);
