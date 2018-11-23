@@ -1,3 +1,8 @@
+#include <EEPROM.h>
+
+// eeprom addresses
+#define ADJ_EEPADDR 0x00
+
 // pins
 #define VSYNC 2
 #define HALL 3
@@ -90,7 +95,7 @@ volatile bool hall_maybe_skip = false;
 volatile bool hall_maybe_bounce = false;
 
 volatile byte enc_current_state = B11;
-volatile int enc_change = 0;
+volatile int8_t enc_change = 0;
 
 unsigned long hall_last_big_d = 0;
 
@@ -101,6 +106,8 @@ unsigned long update_interval = sp / 10;  // 10x dead time
 
 double err_sum = 0;
 double last_output = 0;
+
+double adj = 0;  // fine speed adjustment
 
 typedef struct {
   unsigned long last_update;
@@ -292,17 +299,44 @@ bool pulse() {
 }
 
 
+bool enc_pressed = false;
+unsigned long enc_press = 0;
+
 void update_mode(bool go) {
   uint16_t m = analogRead(MODE);
   Mode next_mode;
   if (m < MODE_1_THRESH) {
-    adjusting = true;
+    if (!adjusting) {
+      enc_change = 0;
+      adjusting = true;
+    }
+    if (digitalRead(ENC_SW) == HIGH) {
+      if (!enc_pressed) {
+        enc_pressed = true;
+        enc_press = millis();
+      } else if (millis() - enc_press > 1000) {
+        adj = 0;
+      }
+    } else {
+      enc_pressed = false;
+    }
     next_mode = control_mode;
-    (state == syncing && pulse())
-      ? encRGBWrite(0, 255, 0)
-      : encRGBWrite(64, 0, 192);
+    if (enc_pressed) {
+      pulse() && (millis() - enc_press < 1000)
+        ? encRGBWrite(64, 0, 192)
+        : encRGBWrite(8, 0, 24);
+    } else if (state == syncing) {
+      pulse()
+        ? encRGBWrite(0, 255, 0)
+        : encRGBWrite(64, 0, 192);
+    } else {
+      encRGBWrite(64, 0, 192);
+    }
   } else if (m < MODE_2_THRESH) {
-    adjusting = false;
+    if (adjusting) {
+      EEPROM.put(ADJ_EEPADDR, adj);
+      adjusting = false;
+    }
     next_mode = control_mode;
     (state == syncing && pulse())
       ? encRGBWrite(0, 255, 0)
@@ -367,6 +401,10 @@ void setup() {
   while (!Serial);
   Serial.println("setup complete.");
   transition(stopped);
+
+  EEPROM.get(ADJ_EEPADDR, adj);
+  Serial.print("adj ");
+  Serial.println(adj);
 }
 
 void loop() {
@@ -555,8 +593,6 @@ bool stall_check(unsigned long t, bool init) {
 
 uint8_t err_count = 0;
 
-double adj = 0;
-
 bool track(unsigned long t, bool init) {
   // phase-lock
   if (init) {
@@ -564,7 +600,19 @@ bool track(unsigned long t, bool init) {
   }
   if (t - last_pid_update >= update_interval) {
     if (adjusting) {
-      adj = analogRead(ADJ) / 1023.0 - 0.5;
+      if (enc_change != 0) {
+        adj += enc_change / 1000.0;
+        if (adj > 0.5) {
+          adj = 0.5;
+          encRGBWrite(255, 0, 0);
+        } else if (adj < -0.5) {
+          adj = -0.5;
+          encRGBWrite(255, 0, 0);
+        }
+        enc_change = 0;
+        Serial.print("new adj: ");
+        Serial.println(adj);
+      }
     }
     double target_phase;
     if (mode == control_mode) {
@@ -607,14 +655,18 @@ bool track(unsigned long t, bool init) {
     double input = last_hall_dt_micros / 1000;  // to millis
     double err = abs(input - sp) / sp;
     if (err > 0.1) {
-      err_count++;
+      err_count += 2;
       Serial.print("\t");
       Serial.print(err);
       Serial.print("\t");
       Serial.println(err_count);
       return err_count > 23;  // cover at least 3 measurement cycles
-    } else {
-      err_count = 0;
+    } else if (err_count > 0) {
+      Serial.print("ok now\t");
+      Serial.print(err);
+      Serial.print("\t");
+      Serial.println(err_count);
+      err_count -= 1;
     }
 
 //    Serial.println();
