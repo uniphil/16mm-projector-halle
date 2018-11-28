@@ -1,5 +1,7 @@
 #include <EEPROM.h>
 
+#define DEBUG false
+
 // eeprom addresses
 #define ADJ_EEPADDR 0x00
 
@@ -512,16 +514,18 @@ bool sync(unsigned long t, bool init) {
       Serial.print("\t");
       Serial.println(last_pid_update);
     }
-    Serial.print("sp:\t");
-    Serial.print(sp + adj);
-    Serial.print("\tinput:\t");
-    Serial.print(input);
-    Serial.print("\tp:\t");
-    Serial.print(KP * err);
-    Serial.print("\ti:\t");
-    Serial.print(KI * curr_err_sum);
-    Serial.print("\td:\t");
-    Serial.print(KD * last_hall_d_err);
+    if (DEBUG) {
+      Serial.print("sp:\t");
+      Serial.print(sp + adj);
+      Serial.print("\tinput:\t");
+      Serial.print(input);
+      Serial.print("\tp:\t");
+      Serial.print(KP * err);
+      Serial.print("\ti:\t");
+      Serial.print(KI * curr_err_sum);
+      Serial.print("\td:\t");
+      Serial.print(KD * last_hall_d_err);
+    }
     double output = KP * err + KI * curr_err_sum + KD * last_hall_d_err;
     bool output_in_range;
     if (output < 0) {
@@ -530,11 +534,13 @@ bool sync(unsigned long t, bool init) {
     } else {
       output_in_range = drive(output);
     }
-    Serial.print("\to:\t");
-    Serial.print(output);
-    Serial.print(" (");
-    Serial.print(output_in_range);
-    Serial.println(")");
+    if (DEBUG) {
+      Serial.print("\to:\t");
+      Serial.print(output);
+      Serial.print(" (");
+      Serial.print(output_in_range);
+      Serial.println(")");
+    }
     last_output = output;
     last_pid_update = t;
     if (output_in_range) {  // avoid integral wind-up
@@ -657,16 +663,33 @@ bool track(unsigned long t, bool init) {
 
 
 unsigned long last_fps_update = 0;
+uint16_t last_pot = 0;
+double last_fps = 0;
+void report(unsigned long t, bool init, uint16_t pot) {
+  if (init) {
+    Serial.println("pot\tfps");
+  }
+  if (t - last_fps_update < 500) {
+    return;
+  }
+  double fps = 1.0 / hall_dt_micros * 1000000;
+  if (abs((int)pot - (int)last_pot) < 5 &&
+      abs(fps - last_fps) < 0.3) {
+    return;
+  }
+  Serial.print(pot);
+  Serial.print('\t');
+  Serial.println(fps);
+  last_fps_update = t;
+  last_pot = pot;
+  last_fps = fps;
+}
+
 bool manual_speed(unsigned long t, bool init) {
   uint16_t pot = analogRead(ADJ);
   uint16_t level = map(pot, 0, 1023, 1, 1000);
   drive(level);
-  if (t - last_fps_update > 500) {
-    Serial.print(level);
-    Serial.print('\t');
-    Serial.println(1.0 / hall_dt_micros * 1000000);
-    last_fps_update = t;
-  }
+  report(t, init, pot);
   return false;
 }
 
@@ -674,12 +697,7 @@ bool manual_rewind(unsigned long t, bool init) {
   uint16_t pot = analogRead(ADJ);
   uint16_t level = map(pot, 0, 1023, 1, 1000);
   drive(level, true);
-  if (t - last_fps_update > 500) {
-    Serial.print(level);
-    Serial.print('\t');
-    Serial.println(1.0 / hall_dt_micros * 1000000);
-    last_fps_update = t;
-  }
+  report(t, init, pot);
   return false;
 }
 
