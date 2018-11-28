@@ -133,7 +133,7 @@ void hall_trigger() {
   OCR0A = TCNT0 + rem_ticks;  
   // if the timer overflowed while in this isr, drop a tick
   if (SREG & B00000001) {
-    ticks_to_shutter_close++;
+//    ticks_to_shutter_close++;
   }
 }
 
@@ -160,7 +160,7 @@ ISR(TIMER0_COMPA_vect) {
     }
     // if the timer overflowed while in this isr, pick up an extra tick
     if (SREG & B00000001) {
-      ticks_to_shutter_open++;
+//      ticks_to_shutter_open++;
     }
   }
 }
