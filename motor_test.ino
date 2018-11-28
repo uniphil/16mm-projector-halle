@@ -106,6 +106,7 @@ double err_sum = 0;
 double last_output = 0;
 
 double adj = 0;  // fine speed adjustment
+double phase_shift = 0;  // for hopefully-glitch-free transitions
 
 void hall_trigger() {
   unsigned long now = micros();
@@ -569,34 +570,49 @@ bool stall_check(unsigned long t, bool init) {
 uint8_t err_count = 0;
 
 bool track(unsigned long t, bool init) {
+  bool reset_phase_shift = false;
+
   // phase-lock
   if (init) {
     err_count = 0;
+    reset_phase_shift = true;
   }
   if (t - last_pid_update >= update_interval) {
-    if (adjusting) {
-      if (enc_change != 0) {
-        adj += enc_change / 1000.0;
-        if (adj > 0.5) {
-          adj = 0.5;
-          encRGBWrite(255, 0, 0);
-        } else if (adj < -0.5) {
-          adj = -0.5;
-          encRGBWrite(255, 0, 0);
-        }
-        enc_change = 0;
-        Serial.print("new adj: ");
-        Serial.println(adj);
+    if (adjusting && enc_change != 0) {
+      adj += enc_change / 1000.0;
+      if (adj > 0.5) {
+        adj = 0.5;
+        encRGBWrite(255, 0, 0);
+      } else if (adj < -0.5) {
+        adj = -0.5;
+        encRGBWrite(255, 0, 0);
       }
+      enc_change = 0;
+      Serial.print("new adj: ");
+      Serial.println(adj);
+
+      reset_phase_shift = true;
     }
+
     unsigned long now = micros();
-    double target_phase = (now % (unsigned int)((sp + adj) * 1000)) / ((sp + adj) * 1000);
+
     noInterrupts();
       unsigned long last_hall_last_trigger = hall_last_trigger;
       unsigned long last_hall_dt_micros = hall_dt_micros;
     interrupts();
-    unsigned long measured_t = micros() - last_hall_last_trigger;
+    unsigned long measured_t = now - last_hall_last_trigger;
     double measured_phase = (measured_t % last_hall_dt_micros) / (double)last_hall_dt_micros;
+
+    double unshifted_target_phase = (now % (unsigned int)((sp + adj) * 1000)) / ((sp + adj) * 1000);
+
+    if (reset_phase_shift) {
+      phase_shift = measured_phase - unshifted_target_phase;
+    }
+
+    double target_phase = unshifted_target_phase + phase_shift;
+    if (target_phase > 1.0) {
+      target_phase -= 1.0;
+    }
 
     double phase_error = target_phase - measured_phase;
     if (phase_error > 0.5) {
