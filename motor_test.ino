@@ -142,7 +142,7 @@ void hall_trigger() {
   hall_last_trigger = now;
 
   double input = hall_dt_micros / 1000;  // to millis
-  double err = input - sp;
+  double err = input - (sp + adj);
   hall_d_err = (err - hall_last_err) / input;
   hall_last_err = err;
 
@@ -528,7 +528,7 @@ bool sync(unsigned long t, bool init) {
       double last_hall_d_err = hall_d_err;
     interrupts();
     double input = last_hall_dt_micros / 1000;  // to millis
-    double err = input - sp;
+    double err = input - (sp + adj);
     double curr_err_sum = err_sum + err * dt;
     if (KI * curr_err_sum < 0) {
       Serial.print("WAT ");
@@ -537,7 +537,7 @@ bool sync(unsigned long t, bool init) {
       Serial.println(last_pid_update);
     }
     Serial.print("sp:\t");
-    Serial.print(sp);
+    Serial.print(sp + adj);
     Serial.print("\tinput:\t");
     Serial.print(input);
     Serial.print("\tp:\t");
@@ -578,7 +578,7 @@ bool stall_check(unsigned long t, bool init) {
   interrupts();
   unsigned long now_raw_micros = micros();
   unsigned long dt_last = (now_raw_micros - last_hall_last_trigger) / 1000;
-  if (dt_last > sp * 8) {
+  if (dt_last > (sp + adj) * 8) {
     Serial.print("stalled? ");
     Serial.print(dt_last);
     Serial.print("\n");
@@ -653,7 +653,7 @@ bool track(unsigned long t, bool init) {
     last_pid_update = t;
     
     double input = last_hall_dt_micros / 1000;  // to millis
-    double err = abs(input - sp) / sp;
+    double err = abs(input - (sp + adj)) / (sp + adj);
     if (err > 0.1) {
       err_count += 2;
       Serial.print("\t");
