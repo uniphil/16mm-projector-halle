@@ -69,7 +69,7 @@ enum State {
 enum Mode {
   manual_mode,
   control_mode,
-  vsync_mode,
+  // find adjust mode?
   rewind_mode,
 };
 
@@ -79,8 +79,6 @@ double last_speed = 0;
 unsigned long last_pid_update = 0;
 unsigned long last_state_change = 0;
 bool fresh_state_change = true;
-volatile unsigned long vsync_last_trigger = 0;
-volatile unsigned long vsync_last_last_trigger = 0;
 volatile unsigned long hall_last_trigger = 0;
 volatile unsigned long hall_dt_micros;
 
@@ -108,26 +106,6 @@ double err_sum = 0;
 double last_output = 0;
 
 double adj = 0;  // fine speed adjustment
-
-typedef struct {
-  unsigned long last_update;
-  double kp;
-  double ki;
-  double kd;
-  double err_acc;
-  double last_err;
-} pid;
-
-#define vsync_div 2
-volatile uint8_t vsync_count = 0;
-void vsync_trigger() {
-  vsync_count = (vsync_count + 1) % vsync_div;
-  if (vsync_count != 0) {
-    return;
-  }
-  vsync_last_last_trigger = vsync_last_trigger;
-  vsync_last_trigger = micros();
-}
 
 void hall_trigger() {
   unsigned long now = micros();
@@ -237,8 +215,6 @@ char* mode_name(Mode mode) {
       return "manual";
     case (control_mode):
       return "control";
-    case (vsync_mode):
-      return "vsync";
     case (rewind_mode):
       return "rewind";
     default:
@@ -385,7 +361,6 @@ void setup() {
   TCCR1B |= _BV(WGM12);
   TCCR1B &= ~_BV(WGM13);
 
-  attachInterrupt(digitalPinToInterrupt(VSYNC), vsync_trigger, FALLING);  // active-low
   attachInterrupt(digitalPinToInterrupt(HALL), hall_trigger, FALLING);  // active-low
 
   // timer0 interrupt for shutter closing
@@ -614,18 +589,8 @@ bool track(unsigned long t, bool init) {
         Serial.println(adj);
       }
     }
-    double target_phase;
-    if (mode == control_mode) {
-      unsigned long now = micros();
-      target_phase = (now % (unsigned int)((sp + adj) * 1000)) / ((sp + adj) * 1000);
-    } else {
-      noInterrupts();
-        double set = (vsync_last_trigger - vsync_last_last_trigger) / 1000.0;
-      interrupts();
-      target_phase = (t % (unsigned int)(set + adj)) / (set + adj);
-//      Serial.print("target ");
-//      Serial.println(target_phase);
-    }
+    unsigned long now = micros();
+    double target_phase = (now % (unsigned int)((sp + adj) * 1000)) / ((sp + adj) * 1000);
     noInterrupts();
       unsigned long last_hall_last_trigger = hall_last_trigger;
       unsigned long last_hall_dt_micros = hall_dt_micros;
